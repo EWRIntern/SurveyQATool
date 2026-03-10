@@ -1,5 +1,4 @@
 from __future__ import annotations
-\
 import os
 import re
 import json
@@ -884,6 +883,46 @@ def api_upload(
 def api_documents(tenant_id: str="default", db: Session=Depends(get_db)):
     docs = db.query(Document).filter(Document.tenant_id==tenant_id).order_by(Document.year.desc()).all()
     return [{"id":d.id,"title":d.title,"year":d.year,"audience":d.audience,"filename":d.filename} for d in docs]
+
+
+@app.delete("/api/documents/{document_id}")
+def api_delete_document(document_id: int, db: Session = Depends(get_db)):
+    document = db.query(Document).filter(Document.id == document_id).first()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    questions = db.query(Question).filter(Question.doc_id == document_id).all()
+    question_ids = [q.id for q in questions]
+    canonical_ids = list({q.canonical_id for q in questions if q.canonical_id is not None})
+
+    if question_ids:
+        db.query(Embedding).filter(
+            Embedding.question_id.in_(question_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(Question).filter(
+        Question.doc_id == document_id
+    ).delete(synchronize_session=False)
+
+    for canonical_id in canonical_ids:
+        still_exists = db.query(Question).filter(
+            Question.canonical_id == canonical_id
+        ).first()
+        if not still_exists:
+            db.query(Canonical).filter(
+                Canonical.id == canonical_id
+            ).delete(synchronize_session=False)
+
+    if document.storage_path and os.path.exists(document.storage_path):
+        try:
+            os.remove(document.storage_path)
+        except Exception:
+            pass
+
+    db.delete(document)
+    db.commit()
+
+    return {"ok": True, "deleted_document_id": document_id}
 
 @app.get("/api/search")
 def api_search(
